@@ -4,7 +4,20 @@ from pathlib import Path
 # adding src directory to sys.path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from web_core_trace.parser import LogEntry
-from web_core_trace.detector import check_signatures, detect_brute_force, detect_php2shell_stale_worker, ThreatDetector
+from web_core_trace.detector import (
+    check_signatures, 
+    detect_brute_force, 
+    detect_php2shell_stale_worker, 
+    ThreatDetector
+)
+from web_core_trace.memory_parser import (
+    FunctionPointer,
+    HeapChunk,
+    MemoryRegion,
+    MemorySnapshot,
+    OpcacheScript,
+    ProcessInfo
+)
 
 
 ### helper function to create a LogEntry for testing
@@ -101,3 +114,67 @@ class TestDetector(unittest.TestCase):
         detector = ThreatDetector()
         matches = detector.analyze(entries) 
         self.assertGreater(len(matches), 0)
+
+    # memory heuristics test
+    def test_analyze_memory_heuristics(self):
+        snapshot = MemorySnapshot(
+            source="test:memory",
+            regions=[
+                MemoryRegion(
+                    start_addr=0x7F000000,
+                    end_addr=0x7F021000,
+                    permission="rwxp",
+                    path="[heap]",
+                    pid=1234,
+                    process_name="php-fpm",
+                )
+            ],
+            heap_chunks=[
+                HeapChunk(
+                    address=0x7F001000,
+                    size=128,
+                    is_freed=True,
+                    target_ptr=0x7F002000,
+                    owner_worker_pid=1234,
+                    current_worker_pid=1235,
+                )
+            ],
+            function_pointers=[
+                FunctionPointer(
+                    symbol_name="zend_execute_ex",
+                    target_addr=0xDEADBEEF,
+                    valid_min_addr=0x55000000,
+                    valid_max_addr=0x55100000,
+                    pid=1234,
+                )
+            ],
+            opcache_scripts=[
+                OpcacheScript(
+                    script_path="eval()'d code",
+                    memory_addr=0x7F005000,
+                    exists_on_disk=False,
+                    payload_preview="system('id');",
+                    pid=1234,
+                )
+            ],
+            processes=[
+                ProcessInfo(
+                    pid=1300,
+                    ppid=1234,
+                    name="sh",
+                    parent_name="php-fpm",
+                    cmdline="/bin/sh -c id",
+                )
+            ],
+        )
+
+        detector = ThreatDetector()
+        matches = detector.analyze_memory(snapshot)
+        categories = {m.category for m in matches}
+
+        self.assertIn("Memory UAF / Dangling Pointer", categories)
+        self.assertIn("Orphan Zend Heap Structure", categories)
+        self.assertIn("Executable Heap (RWX)", categories)
+        self.assertIn("Function Pointer Hook / Corruption", categories)
+        self.assertIn("Fileless Web Shell", categories)
+        self.assertIn("Suspicious Worker Child Process", categories)

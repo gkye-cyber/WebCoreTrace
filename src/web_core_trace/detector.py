@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from collections import defaultdict
 from typing import Iterable, Optional
+from web_core_trace.memory_parser import MemorySnapshot
 from web_core_trace.parser import LogEntry
 import re
 
@@ -10,7 +11,7 @@ class ThreatMatch:
     severity: str
     description: str
     matched_payload: str
-    entry: LogEntry
+    entry: Optional[LogEntry] = None
     mitre_id: Optional[str] = None
     mitre_technique: Optional[str] = None
     mitre_tactic: Optional[str] = None
@@ -260,6 +261,117 @@ def detect_php2shell_stale_worker(entries: Iterable[LogEntry]) -> list[ThreatMat
                 break
     return matches
 
+### memory layer heuristics (core mode)
+def detect_heap_anomalies(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for chunk in snapshot.heap_chunks:
+        if chunk.is_freed and chunk.target_ptr != 0:
+            matches.append(
+                ThreatMatch(
+                    category="Memory UAF / Dangling Pointer",
+                    severity="Critical",
+                    description=f"Freed Zend heap chunk at 0x{chunk.address:x} retains active target pointer 0x{chunk.target_ptr:x}.",
+                    matched_payload=f"chunk=0x{chunk.address:x} size={chunk.size} target_ptr=0x{chunk.target_ptr:x}",
+                    mitre_id="T1068",
+                    mitre_technique="Exploitation for Privilege Escalation",
+                    mitre_tactic="Privilege Escalation"
+                )
+            )
+        if (
+            chunk.owner_worker_pid != 0 
+            and chunk.current_worker_pid != 0 
+            and  chunk.owner_worker_pid!= chunk.current_worker_pid
+        ):
+            matches.append(
+                ThreatMatch(
+                    category="Orphan Zend Heap Structure",
+                    severity="High",
+                    description=f"Heap chunk at 0x{chunk.address:x} crossed worker boundary (owner PID {chunk.owner_worker_pid} -> current PID {chunk.current_worker_pid}).",
+                    matched_payload=f"chunk=0x{chunk.address:x} owner_pid={chunk.owner_worker_pid} current_pid={chunk.current_worker_pid}",
+                    mitre_id="T1055",
+                    mitre_technique="Process Injection",
+                    mitre_tactic="Defense Evasion"
+                )
+            )
+    return matches
+
+### detecting executable heaps
+def detect_rwx_regions(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for region in snapshot.regions:
+        if "rwx" in region.permission.lower():
+            matches.append(
+                ThreatMatch(
+                    category="Executable Heap (RWX)",
+                    severity="Critical",
+                    description=f"Anomalous RWX memory region in {region.process_name} (PID {region.pid} at {region.path}. )",
+                    matched_payload=f"0x{region.start_addr:x}-0x{region.end_addr:x} {region.permission} {region.path}",
+                    mitre_id="T1055",
+                    mitre_technique="Process Injection",
+                    mitre_tactic="Defense Evasion"
+                )
+            )
+    return matches
+
+### detecting pointer corruption
+def detect_pointer_corruption(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for fp in snapshot.function_pointers:
+        if not (fp.valid_min_addr <= fp.target_addr <= fp.valid_max_addr):
+            matches.append(
+                ThreatMatch(
+                    category="Function Pointer Hook / Corruption",
+                    severity="Critical",
+                    description=f"Core function pointer '{fp.symbol_name}' (PID {fp.pid}) points outside valid module bounds.",
+                    matched_payload=f"{fp.symbol_name}->0x{fp.target_addr:x} (valid: 0x{fp.valid_min_addr:x}-0x{fp.valid_max_addr:x})",
+                    mitre_id="T1574",
+                    mitre_technique="Hijack Execution Flow",
+                    mitre_tactic="Persistence"
+                )
+            )
+    return matches
+
+### detecting fileless webshells
+def detect_fileless_webshells(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for script in snapshot.opcache_scripts:
+        if not script.exists_on_disk or "eval()" in script.script_path:
+            matches.append(
+                ThreatMatch(
+                    category="Fileless Web Shell",
+                    severity="Critical",
+                    description=f"Memory-resident PHP execution stream '{script.script_path}' at 0x{script.memory_addr:x} has no backing file on disk.",
+                    matched_payload=f"path={script.script_path} addr=0x{script.memory_addr:x} preview={script.payload_preview[:60]}",
+                    mitre_id="T1505.003",
+                    mitre_technique="Server Software Component: Web Shell",
+                    mitre_tactic="Persistence"
+                )
+            )
+    return matches
+
+### detecting suspicious process
+WEB_WORKER_NAMES = {"php-fpm", "httpd", "nginx", "apache2", "w3wp.exe", "php-cgi"}
+SHELL_NAMES = {"sh", "bash", "dash", "zsh", "ksh", "cmd.exe", "powershell.exe", "pwsh"}
+
+def detect_suspicious_processes(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for proc in snapshot.processes:
+        proc_base = proc.name.lower().rsplit("/", 1)[-1]
+        parent_base = proc.parent_name.lower().rsplit("/", 1)[-1]
+        if parent_base in WEB_WORKER_NAMES and proc_base in SHELL_NAMES:
+            matches.append(
+                ThreatMatch(
+                    category="Suspicious Worker Child Process",
+                    severity="Critical",
+                    description=f"Web worker '{proc.parent_name}' (PPID {proc.ppid}) spawned shell interpreter '{proc.name}' (PID {proc.pid}).",
+                    matched_payload=f"{proc.parent_name}({proc.ppid}) -> {proc.name}({proc.pid}): {proc.cmdline}",
+                    mitre_id="T1059",
+                    mitre_technique="Command and Scripting Interpreter",
+                    mitre_tactic="Execution"
+                )
+            )
+    return matches
+
 ### unified function to detect threats in log entries
 class ThreatDetector:
     def __init__(self, rules: Optional[list[SignatureRule]] = None, brute_force_threshold: int = 3):
@@ -282,4 +394,13 @@ class ThreatDetector:
         # PHP2Shell multi-entry stale worker detection
         all_matches.extend(detect_php2shell_stale_worker(entry_list))
 
+        return all_matches
+
+    def analyze_memory(self, snapshot: MemorySnapshot) -> list[ThreatMatch]:
+        all_matches: list[ThreatMatch] = []
+        all_matches.extend(detect_heap_anomalies(snapshot))
+        all_matches.extend(detect_rwx_regions(snapshot))
+        all_matches.extend(detect_pointer_corruption(snapshot))
+        all_matches.extend(detect_fileless_webshells(snapshot))
+        all_matches.extend(detect_suspicious_processes(snapshot))
         return all_matches
