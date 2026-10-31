@@ -1,4 +1,4 @@
-# Automated Web Server Access Log Threat Hunter (`Web Core Trace`)
+# Automated Web Server Threat Hunter (`Web Core Trace`)
 
 A lightweight Python forensic command-line tool that parses standard web server access logs (Apache, Nginx, or IIS Common/Combined Log Format) and performs host/runtime memory forensics. This tool is designed to apply high-fidelity regular expressions to detect common attack vectors mapped to **MITRE ATT&CKÂ®**, enriches IP addresses, perform memory analysis (static, live, or automated acquisition) and outputs structured **JSON** and interactive **HTML** forensic reports.
 
@@ -29,7 +29,7 @@ Modern web server breaches rarely leave their full footprint in a single placeâ€
 ---
 
 ## Architecture & Operational Pipeline
-![web-log-triage Operational Architecture](assets/architecture_flowchart.png)
+![WebCoreTrace Operational Architecture](assets/architecture_flowchart.png)
 
 ---
 
