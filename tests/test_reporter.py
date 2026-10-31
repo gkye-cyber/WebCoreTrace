@@ -81,3 +81,22 @@ class TestReporter(unittest.TestCase):
         self.assertIn("SQLi", html_text)
         self.assertIn("T1190", html_text)
         self.assertIn("UNION SELECT", html_text)
+
+    def test_memory_threat_reporting_without_log_entry(self):
+        mem_match = ThreatMatch(
+            category="Executable Heap (RWX)",
+            severity="Critical",
+            description="Anomalous RWX memory region in php-fpm (PID 1234) at [heap].",
+            matched_payload="0x7f000000-0x7f021000 rwxp [heap]",
+            entry=None,
+            mitre_id="T1055"
+        )
+        report = build_forensic_report(entries=[], threats=[mem_match])
+        self.assertEqual(report.total_requests, 0)
+        self.assertEqual(report.total_threats, 1)
+        self.assertEqual(report.top_attacking_ips, [])
+        self.assertEqual(report.category_distribution, {"Executable Heap (RWX)": 1})
+
+        html_text = generate_html_report(report)
+        self.assertIn("host-memory", html_text)
+        self.assertIn("Executable Heap (RWX)", html_text)

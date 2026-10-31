@@ -35,8 +35,8 @@ def build_forensic_report(
     
     # calculation vars
     status_codes = dict(Counter(e.status_code for e in entry_list)) # status codes
-    top_ips = Counter(t.entry.ip for t in threats).most_common(10) # top 10 IPs
-    top_uris = Counter(t.entry.decoded_uri for t in threats).most_common(10) # top 10 URIs
+    top_ips = Counter(t.entry.ip for t in threats if t.entry is not None).most_common(10) # top 10 IPs
+    top_uris = Counter(t.entry.decoded_uri for t in threats if t.entry is not None).most_common(10) # top 10 URIs
     categories = dict(Counter(t.category for t in threats)) # mitre categories
     mitre_counts = dict(Counter(t.mitre_id for t in threats if t.mitre_id)) # mitre ids
 
@@ -102,17 +102,25 @@ def generate_html_report(
     # detailed threat rows
     threat_rows = ""
     for t in report.threats:
-        ts = t.entry.timestamp.strftime("%Y-%m-%d %H:%M:%S") if t.entry.timestamp else "-"
+        if t.entry is not None:
+            ts = t.entry.timestamp.strftime("%Y-%m-%d %H:%M:%S") if t.entry.timestamp else "-"
+            ip_val = t.entry.ip
+            uri_val = t.entry.decoded_uri[:80]
+        else:
+            ts = "-"
+            ip_val = "host-memory"
+            uri_val = t.description[:80]
+
         severity_class = t.severity.lower().replace(" ", "-")
         threat_rows += f"""
         <tr>
             <td>{html.escape(ts)}</td>
-            <td><code>{html.escape(t.entry.ip)}</code></td>
+            <td><code>{html.escape(ip_val)}</code></td>
             <td><span class="badge badge-{severity_class}">{html.escape(t.severity)}</span></td>
             <td>{html.escape(t.category)}</td>
             <td><code>{html.escape(t.mitre_id or '-')}</code></td>
             <td><code>{html.escape(t.matched_payload[:60])}</code></td>
-            <td class="uri-col"><code>{html.escape(t.entry.decoded_uri[:80])}</code></td>
+            <td class="uri-col"><code>{html.escape(uri_val)}</code></td>
         </tr>
         """
 
@@ -122,7 +130,7 @@ def generate_html_report(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Web Log Triage Forensic Report</title>
+<title>Web Core Trace Forensic Report</title>
 <style>
     :root {{
         --bg-primary: #0f172a;
@@ -171,7 +179,7 @@ def generate_html_report(
 <body>
 <div class="container">
     <header>
-        <h1>🛡️ Web Log Triage Forensic Report</h1>
+        <h1> Web Core Trace Forensic Report</h1>
         <p class="subtitle">Automated Threat Hunter Incident Analysis</p>
     </header>
 

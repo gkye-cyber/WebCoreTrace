@@ -126,7 +126,7 @@ class TestDetector(unittest.TestCase):
                     permission="rwxp",
                     path="[heap]",
                     pid=1234,
-                    process_name="php-fpm",
+                    process_name="php-fpm"
                 )
             ],
             heap_chunks=[
@@ -136,7 +136,7 @@ class TestDetector(unittest.TestCase):
                     is_freed=True,
                     target_ptr=0x7F002000,
                     owner_worker_pid=1234,
-                    current_worker_pid=1235,
+                    current_worker_pid=1235
                 )
             ],
             function_pointers=[
@@ -145,7 +145,7 @@ class TestDetector(unittest.TestCase):
                     target_addr=0xDEADBEEF,
                     valid_min_addr=0x55000000,
                     valid_max_addr=0x55100000,
-                    pid=1234,
+                    pid=1234
                 )
             ],
             opcache_scripts=[
@@ -154,7 +154,7 @@ class TestDetector(unittest.TestCase):
                     memory_addr=0x7F005000,
                     exists_on_disk=False,
                     payload_preview="system('id');",
-                    pid=1234,
+                    pid=1234
                 )
             ],
             processes=[
@@ -163,9 +163,9 @@ class TestDetector(unittest.TestCase):
                     ppid=1234,
                     name="sh",
                     parent_name="php-fpm",
-                    cmdline="/bin/sh -c id",
+                    cmdline="/bin/sh -c id"
                 )
-            ],
+            ]
         )
 
         detector = ThreatDetector()
