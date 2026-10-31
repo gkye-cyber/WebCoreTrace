@@ -1,26 +1,29 @@
-# Automated Web Server Access Log Threat Hunter (`Web Log Triage`)
+# Automated Web Server Access Log Threat Hunter (`Web Core Trace`)
 
-A lightweight Python forensic command-line tool that parses standard web server access logs (Apache, Nginx, or IIS Common/Combined Log Format), applies high-fidelity regular expressions to detect common attack vectors mapped to **MITRE ATT&CK®**, enriches IP addresses, and outputs structured **JSON** and interactive **HTML** forensic reports.
+A lightweight Python forensic command-line tool that parses standard web server access logs (Apache, Nginx, or IIS Common/Combined Log Format) and performs host/runtime memory forensics. This tool is designed to apply high-fidelity regular expressions to detect common attack vectors mapped to **MITRE ATT&CK®**, enriches IP addresses, perform memory analysis (static, live, or automated acquisition) and outputs structured **JSON** and interactive **HTML** forensic reports.
 
 ---
 
-## Why `Web Log Triage`?
-Web server access logs are often the **first and most critical line of evidence** when an application is probed, fuzzed, or breached. However, security analysts and sysadmins typically face a dilemma:
-- **Heavy Enterprise SIEMs** (Splunk, Datadog, Elastic) are costly, complex to configure, and require shipping sensitive logs off-premise.
-- **Ad-hoc CLI utilities** (`grep`, `awk`, `cut`) are tedious, miss multi-line behavioral patterns (like directory brute-forcing), and fail to decode obfuscated URL-encoded payloads.
-**`Web Log Trirage` bridges this gap.** It is a standalone, lightweight, zero-dependency threat hunter designed to turn raw, multi-gigabyte access logs into structured forensic intelligence in seconds.
+## Why `Web Core Trace`?
+Modern web server breaches rarely leave their full footprint in a single place—initial exploitation triggers appear at the **network boundary** in web access logs, while advanced post-exploitation payloads hide in **volatile host memory**. However, incident responders and sysadmins typically face a dilemma:
+- **Heavy Enterprise SIEMs & EDRs** (Splunk, Datadog, CrowdStrike) are costly, complex to deploy, and require shipping sensitive logs or memory telemetry off-premise.
+- **Siloed CLI Utilities** (`grep`/`awk` for logs, or manual debugger/hex inspection for core dumps) are slow, miss multi-request behavioral sequences (such as worker crashes followed by state reuse), and cannot correlate web-layer exploits with in-memory implants.
+
+**`Web Core Trace` bridges this gap.** It is a standalone, lightweight, dual-mode forensic hunter that correlates pre-exploit web access log anomalies with post-exploitation runtime memory artifacts (UAF heaps, `rwx` regions, hooked pointers, fileless web shells, and rogue worker shells) in seconds.
 
 ---
 
 ## Core Goals & Design Philosophy
 
 1. **Zero External Dependencies:** Built using Python's standard library (with optional `rich` formatting), ensuring it runs out-of-the-box on air-gapped forensic workstations or minimal production servers.
-2. **Dual-Pass Detection Engine:**
-   - **Signature Inspection:** Evaluates individual requests against high-fidelity regexes for SQLi, LFI, RCE, and reconnaissance tools.
-   - **Behavioral Heuristics:** Aggregates error bursts (`404`/`403`) across time to detect automated scanners (Gobuster, DirBuster, ffuf).
-3. **Anti-Evasion & URL Normalization:** Automatically unquotes URL encodings (`%20` $\rightarrow$ space, `%27` $\rightarrow$ `'`, `%2f` $\rightarrow$ `/`) before analysis, preventing attackers from bypassing rules with simple obfuscation.
-4. **MITRE ATT&CK® Alignment:** Every alert is pre-mapped to official ATT&CK Enterprise techniques (`T1190`, `T1059.004`, `T1595`) to accelerate incident response escalation.
-5. **Memory-Safe Streaming:** Utilizes Python lazy generators to stream through multi-gigabyte log files line-by-line without causing system memory exhaustion.
+2. **Dual-Mode Forensic Architecture (`web-log-triage` & `core`):**
+   - **`web-log-triage` Mode (Application & Network Boundary):** Streams flat text access logs (Apache, Nginx, IIS Common/Combined) line-by-line to detect external exploit triggers, scanners, and **PHP2Shell (`CVE-2026-109618` / `CVE-2026-109619`)** state manipulation.
+   - **`core` Mode (Host & Runtime Boundary):** Inspects static RAM/core dumps (`--memory-dump` via Volatility 3 JSON or zero-copy binary `mmap`), live `/proc` process trees (`--live-host`), or automated acquisitions (`--acquire-and-scan` via `avml`/`gcore`) for post-exploitation memory artifacts.
+3. **Dual-Pass Web & Memory Heuristics:**
+   - **Web Layer:** Evaluates individual requests against regex signatures (SQLi, LFI, RCE, XSS, SSRF, PHP2Shell OOM triggers) and correlates multi-request sequences (directory brute-forcing and `500`/`502`/`503` $\rightarrow$ `200` worker state reuse).
+   - **Memory Layer:** Detects Zend heap Use-After-Free (UAF) dangling pointers, cross-worker orphan heap chunks, `rwx` executable heaps, hooked/corrupted function pointers, fileless opcache `eval()` web shells, and web workers spawning shell interpreters.
+4. **Anti-Evasion & URL Normalization:** Automatically unquotes URL encodings (`%20` $\rightarrow$ space, `%27` $\rightarrow$ `'`, `%2f` $\rightarrow$ `/`) while preserving raw URI inspection for `%XX` OOM floods.
+5. **MITRE ATT&CK® Alignment:** Every web and memory alert is pre-mapped to official ATT&CK Enterprise techniques (`T1190`, `T1059`, `T1055`, `T1068`, `T1574`, `T1505.003`, `T1595`).
 6. **Multi-Format Reporting:** Instant terminal dashboard for quick scoping, structured JSON for SIEM ingestion, and self-contained HTML reports for executive reporting.
 
 ---
@@ -48,13 +51,16 @@ make test
 # 3. Run triage on sample logs
 make run
 
-# 4. Generate visual HTML report
+# 4. Run core mode on sample memory
+make run-core
+
+# 5. Generate visual HTML report
 make html
 
-# 5. Generate JSON report for tool ingestion
+# 6. Generate JSON report for tool ingestion
 make json
 
-# 6. Remove virtualenv, caches, and report file
+# 7. Remove virtualenv, caches, and report file
 make clean
 ```
 
@@ -72,23 +78,26 @@ If you are on Windows, you can use the automated `wlt-setup.ps1`
 # 3. Run triage on sample logs
 .\wlt-setup.ps1 run
 
-# 4. Generate visual HTML report
+# 4. Run core mode on sample memory
+.\wlt-setup.ps1 run-core
+
+# 5. Generate visual HTML report
 .\wlt-setup.ps1 html
 
-# 5. Generate JSON report
+# 6. Generate JSON report
 .\wlt-setup.ps1 json
 
-# 6. Remove virtualenv, caches, and report file
+# 7. Remove virtualenv, caches, and report file
 .\wlt-setup.ps1 clean
 ```
 
 ---
 
-## Sample Terminal Output
+## Sample Terminal Output (web-log-triage mode)
 
 ```text
 =================================================================
- WEB LOG TRIAGE - FORENSIC SUMMARY
+ Web Core Trace - FORENSIC SUMMARY
 =================================================================
  Total Requests Analyzed : 8
  Unique IP Addresses     : 5
@@ -125,40 +134,58 @@ If you are on Windows, you can use the automated `wlt-setup.ps1`
 ---
 
 ## CLI Usage & Options
-
 ```bash
-usage: web-log-triage [-h] [-f {console,html,json}] [-o OUTPUT] [--threshold THRESHOLD] [--no-geoip] log_file
+usage: Web Core Trace [-h] [--mode {web-log-triage,core}] [-f {console,html,json}]
+                      [-o OUTPUT] [--threshold THRESHOLD] [--no-geoip]
+                      [--memory-dump MEMORY_DUMP] [--live-host]
+                      [--acquire-and-scan {avml,gcore}] [--pid PID]
+                      [log_file]
 
-Automated Web Server Access Log Threat Hunter & Forensic Triage Tool
+WebCoreTrace: Dual-Mode Web Access Log & Host Memory Forensic Triage Tool
 
 positional arguments:
-  log_file              Path to access log file (Combined or Common log format)
+  log_file              Path to the access log file (for web-log-triage mode; Combined/Common format)
 
 options:
   -h, --help            Show this help message and exit
+  --mode {web-log-triage,core}
+                        Execution mode: 'web-log-triage' (access logs) or 'core' (RAM/process memory)
   -f, --format {console,html,json}
                         Report format: console, html, or json (default: console)
-  -o, --output OUTPUT   Output file path for html/json reports
+  -o, --output OUTPUT   Output file path for html/json
   --threshold THRESHOLD
-                        Brute-force 404/403 request threshold (default: 3)
+                        Brute-force 404/403 threshold (default: 3)
   --no-geoip            Disable online GeoIP lookups (offline mode)
+  --memory-dump MEMORY_DUMP
+                        Path to static RAM/core dump or Volatility 3 JSON snapshot
+  --live-host           Inspect live host processes via /proc
+  --acquire-and-scan {avml,gcore}
+                        Acquire memory with avml/gcore and scan immediately
+  --pid PID             Target process ID for --live-host or --acquire-and-scan
 ```
 
 ---
 
 ## Threat Detection & MITRE ATT&CK® Mapping
 
-
-| Threat Category | Target Field | MITRE Technique | MITRE Tactic | Description |
+| Threat Category | Mode / Source | MITRE Technique | MITRE Tactic | Description |
 | -------- | -------- | -------- | -------- | -------- |
-| SQL Injection (SQLi)    | decoded_uri   | T1190   | Initial Access | **UNION SELECT**, **OR 1=1**, database function injection |
-| Local File Inclusion (LFI)    | decoded_uri   | T1190   | Initial Access | Path traversal *(../, ..\\)* and */etc/passwd* probing |
-| Remote Code Execution (RCE) | decoded_uri | T1059.004 | Execution | Command injection **whoami;id** |
-| Malicious Scanners | user_agent | T1595.002 | Reconnaissance | Known offensive tools (sqlmap, gobuster, nikto, nmap) |
-| Directory Brute-Force | multi-entry | T1595.003 | Reconnaissance | High-frequency 404/403 bursts from a single IP |
-| Sensitive File Probing | decoded_uri | T1552.001 | Credential Access | Attempts to access */.env*, */.git*, config files |
-| Cross-Site Scripting (XSS) | decoded_uri | T1059.007 | Execution | *\<script\>* injection, DOM event handlers, **javascript\:** |
-| Cloud Metadata / SSRF | decoded_uri | T1552.005 | Credential Access | Probing AWS/Azure/GCP instance metadata (169.254.169.254) | 
+| SQL Injection (SQLi) | `web-log-triage` (`decoded_uri`) | T1190 | Initial Access | `UNION SELECT`, `OR 1=1`, database function injection |
+| Local File Inclusion (LFI) | `web-log-triage` (`decoded_uri`) | T1190 | Initial Access | Path traversal (`../`, `..\`) and `/etc/passwd` probing |
+| Remote Code Execution (RCE) | `web-log-triage` (`decoded_uri`) | T1059.004 | Execution | Command injection (`whoami;id`, `system`, `eval`) |
+| Malicious Scanners | `web-log-triage` (`user_agent`) | T1595.002 | Reconnaissance | Known offensive tools (`sqlmap`, `gobuster`, `nikto`, `nmap`) |
+| Directory Brute-Force | `web-log-triage` (`multi-entry`) | T1595.003 | Reconnaissance | High-frequency `401`/`403`/`404` bursts from a single IP |
+| Sensitive File Probing | `web-log-triage` (`decoded_uri`) | T1552.001 | Credential Access | Attempts to access `/.env`, `/.git`, `wp-config.php` |
+| Cross-Site Scripting (XSS) | `web-log-triage` (`decoded_uri`) | T1059.007 | Execution | `<script>` injection, DOM event handlers, `javascript:` |
+| Cloud Metadata / SSRF | `web-log-triage` (`decoded_uri`) | T1552.005 | Credential Access | Probing AWS/Azure/GCP instance metadata (`169.254.169.254`) |
+| PHP2Shell (`CVE-2026-109618`) | `web-log-triage` (`raw_uri`) | T1190 | Initial Access | Oversized URL-encoded keys/queries & deep array nesting OOM triggers |
+| PHP2Shell (`CVE-2026-109619`) | `web-log-triage` (`decoded_uri` / `multi-entry`) | T1190 | Initial Access | Multipart anomalies & persistent worker fault (`500`/`502`/`503` $\rightarrow$ `200`) state reuse |
+| Memory UAF / Dangling Pointer | `core` (`heap_chunks`) | T1068 | Privilege Escalation | Freed Zend heap chunks retaining active non-null target pointers |
+| Orphan Zend Heap Structure | `core` (`heap_chunks`) | T1055 | Defense Evasion | Zend heap chunks crossing worker PID boundaries |
+| Executable Heap (`RWX`) | `core` (`regions`) | T1055 | Defense Evasion | Anomalous `rwx` memory regions in web server worker spaces |
+| Function Pointer Hook / Corruption | `core` (`function_pointers`) | T1574 | Persistence | Core Zend/module function pointers pointing outside valid module bounds |
+| Fileless Web Shell | `core` (`opcache_scripts`) | T1505.003 | Persistence | Memory-resident PHP execution streams (`eval()'d code`) with no file on disk |
+| Suspicious Worker Child Process | `core` (`processes`) | T1059 | Execution | Web workers (`php-fpm`, `httpd`, `nginx`) spawning shell interpreters (`sh`, `bash`, `cmd.exe`) |
 
 ---
 
@@ -196,6 +223,13 @@ options:
 ---
 
 ## Release Notes & Version History
+
+### `v1.0.0` — Dual-Mode Architecture & Host Memory Forensics (`WebCoreTrace`)
+- **Project Rebrand & Package Refactor:** Evolved `web-log-triage` into `WebCoreTrace` (`web_core_trace`).
+- **Dual-Mode Architecture (`--mode web-log-triage` | `--mode core`):** Seamlessly correlates pre-exploit network boundary triggers with post-exploitation runtime memory artifacts.
+- **PHP2Shell Detection (`CVE-2026-109618` & `CVE-2026-109619`):** Added signature and behavioral heuristics for oversized URL-encoded OOM triggers, multipart anomalies, and persistent worker fault (`500`/`502`/`503` -> `200`) state reuse.
+- **Memory Ingestion Engine (`memory_parser.py`):** Added static JSON/binary `mmap` core dump parsing (`--memory-dump`), live `/proc` host inspection (`--live-host`), and automated `avml`/`gcore` memory acquisition (`--acquire-and-scan`).
+- **Memory-Layer Threat Heuristics:** Detects Zend heap UAF dangling pointers, cross-worker orphan heap structures, `rwx` executable heaps, corrupted function pointers, fileless opcache `eval()` web shells, and web workers spawning shell interpreters.
 
 ### `v0.1.0` — Initial Release (October 2026)
 - **Core Parser:** Streaming ingestion of Combined and Common Log Format (CLF) access logs with URL decoding.

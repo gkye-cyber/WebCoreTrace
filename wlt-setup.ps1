@@ -1,6 +1,6 @@
 param (
     [Parameter(Position=0)]
-    [ValidateSet("help", "install", "test", "run", "html", "json", "clean")]
+    [ValidateSet("help", "install", "test", "run", "run-core", "html", "json", "clean")]
     [string]$Task = "help"
 )
 
@@ -38,8 +38,14 @@ switch ($Task) {
 
     # Run triage on sample logs
     "run" {
-        Write-Host "[-] Running web-log-triage on sample log..." -ForegroundColor Cyan
+        Write-Host "[-] Running WebCoreTrace web-log-triage mode on sample log..." -ForegroundColor Cyan
         & $VenvPython -m web_core_trace.cli sample_data\access_sample.log
+    }
+
+    # Run 'core mode' on sample memory
+    "run-core" {
+        Write-Host "[-] Running WebCoreTrace core mode on sample memory dump..." -ForegroundColor Cyan
+        & $VenvPython -m web_core_trace.cli --mode core --memory-dump sample_data\memory_sample.json
     }
 
     # Generate visual HTML report

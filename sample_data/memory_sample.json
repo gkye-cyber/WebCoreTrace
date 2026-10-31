@@ -1,0 +1,49 @@
+{
+  "regions": [
+    {
+      "start_addr": 2130706432,
+      "end_addr": 2130841600,
+      "permission": "rwxp",
+      "path": "[anon:zend_alloc]",
+      "pid": 1420,
+      "process_name": "php-fpm"
+    }
+  ],
+  "heap_chunks": [
+    {
+      "address": 2130710528,
+      "size": 256,
+      "is_freed": true,
+      "target_ptr": 2130714624,
+      "owner_worker_pid": 1419,
+      "current_worker_pid": 1420
+    }
+  ],
+  "function_pointers": [
+    {
+      "symbol_name": "zend_execute_ex",
+      "target_addr": 3735928559,
+      "valid_min_addr": 1426063360,
+      "valid_max_addr": 1427111936,
+      "pid": 1420
+    }
+  ],
+  "opcache_scripts": [
+    {
+      "script_path": "eval()'d code",
+      "memory_addr": 2130726912,
+      "exists_on_disk": false,
+      "payload_preview": "system($_POST['c']);",
+      "pid": 1420
+    }
+  ],
+  "processes": [
+    {
+      "pid": 1488,
+      "ppid": 1420,
+      "name": "sh",
+      "parent_name": "php-fpm",
+      "cmdline": "/bin/sh -c id; uname -a"
+    }
+  ]
+}
