@@ -162,6 +162,21 @@ php2shell_stale_state_rule = SignatureRule(
     mitre_tactic="Initial Access"
 )
 
+# WordPress CVE-2026-119977 upgrade staging race and installer hijack rule
+wp_upgrade_staging_rule = SignatureRule(
+    name="WordPress Upgrade Staging Exploit",
+    category="WordPress Upgrade Race (CVE-2026-119977)",
+    severity="Critical",
+    description="Detects direct requests for setup-config.phpp, install.php, or residual PHP scripts under /wp-content/upgrade/.",
+    pattern=re.compile(
+        r"(?i)/wp-content/upgrade/[^/\s]+/(?:(?:setup-config|install)\.php(?:\?step=\d+)?|[^\s?]*\.php)"
+    ),
+    target_field="decoded_uri",
+    mitre_id="T1190",
+    mitre_technique="Exploit Public-Facing Application",
+    mitre_tactic="Initial Access"
+    )
+
 ### matching function to check log entry against signature rules
 RULES: list[SignatureRule] = [
     sqlli_rule,
@@ -172,7 +187,8 @@ RULES: list[SignatureRule] = [
     xss_rule,
     cloud_metadata_rule,
     php2shell_oom_rule,
-    php2shell_stale_state_rule
+    php2shell_stale_state_rule,
+    wp_upgrade_staging_rule
 ]
 
 def check_signatures(entry: LogEntry, rules: Optional[list[SignatureRule]] = None) -> list[ThreatMatch]:
@@ -259,6 +275,45 @@ def detect_php2shell_stale_worker(entries: Iterable[LogEntry]) -> list[ThreatMat
                     )
                 )
                 break
+    return matches
+
+### behavioral detection for WordPress CVE-2026-119977 upgrade race polling & staged install POST
+def detect_wp_upgrade_race(entries: Iterable[LogEntry], threshold: int = 3) -> list[ThreatMatch]:
+    upgrade_requests_by_ip = defaultdict(list)
+    matches: list[ThreatMatch] = []
+
+    for entry in entries:
+        uri_lower = entry.decoded_uri.lower()
+        if "/wp-content/upgrade/" in  uri_lower:
+            upgrade_requests_by_ip[entry.ip].append(entry)
+            if entry.method.upper() == "POST" and ("setup-config.php" in uri_lower or "install.php" in uri_lower):
+                matches.append(
+                    ThreatMatch(
+                        category="WordPress Upgrade Race (CVE-2026-119977)",
+                        severity="Critical",
+                        description=f"Detected staged installer POST submission ({entry.decoded_uri}) from {entry.ip}.",
+                        matched_payload=f"{entry.method} {entry.decoded_uri} ({entry.status_code})",
+                        entry=entry,
+                        mitre_id="T1190",
+                        mitre_technique="Exploit Public-Facing Application",
+                        mitre_tactic="Initial Access"
+                    )
+                )
+    for ip, req_list in upgrade_requests_by_ip.items():
+        if len(req_list) >= threshold:
+                sample_paths = ",".join(e.decoded_uri for e in req_list[:3])
+                matches.append(
+                    ThreatMatch(
+                        category="WordPress Upgrade Probing (CVE-2026-119977)",
+                        severity="High",
+                        description=f"Detected high-frequency polling ({len(req_list)} requests) targeting /wp-content/upgrade/ staging paths from {ip}",
+                        matched_payload=f"Upgrade race polling: {len(req_list)} requests | Samples: {sample_paths}",
+                        entry=req_list[-1],
+                        mitre_id="T1595.003",
+                        mitre_technique="Active Scanning: Wordlist Scanning",
+                        mitre_tactic="Reconnaissance"
+                )
+            )
     return matches
 
 ### memory layer heuristics (core mode)
@@ -393,6 +448,9 @@ class ThreatDetector:
 
         # PHP2Shell multi-entry stale worker detection
         all_matches.extend(detect_php2shell_stale_worker(entry_list))
+
+        # WordPress upgrade race detection
+        all_matches.extend(detect_wp_upgrade_race(entry_list, threshold=self.brute_force_threshold))  # Assuming snapshot has entries for log-like analysis
 
         return all_matches
 

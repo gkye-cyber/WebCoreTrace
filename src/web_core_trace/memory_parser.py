@@ -48,6 +48,17 @@ class ProcessInfo:
     name: str          # eg: 'sh', 'bash', 'cmd.exe'
     parent_name: str   # eg: 'php-fpm', 'httpd', 'nginx'
     cmdline: str = ""
+    user: str = ""     # eg: 'www-data', 'apache', 'nobody'
+
+@dataclass
+class NetworkConnection:
+    remote_ip: str
+    remote_port: int
+    local_port: int = 0
+    protocol: str = "tcp"
+    pid: int = 0
+    process_name: str = "php-fpm"
+    state: str = "ESTABLISHED"
 
 @dataclass
 class MemorySnapshot:
@@ -57,8 +68,8 @@ class MemorySnapshot:
     function_pointers: list[FunctionPointer] = field(default_factory=list)
     opcache_scripts: list[OpcacheScript] = field(default_factory=list)
     processes: list[ProcessInfo] = field(default_factory=list)
+    network_connections: list[NetworkConnection] = field(default_factory=list)
     raw_signatures: list[str] = field(default_factory=list)
-
 
 ### static core / RAM dump ingestion (--memory-dump)
 def parse_memory_dump(dump_path: Path | str) -> MemorySnapshot:
@@ -76,6 +87,7 @@ def parse_memory_dump(dump_path: Path | str) -> MemorySnapshot:
         snapshot.function_pointers = [FunctionPointer(**fp) for fp in data.get("function_pointers", [])]
         snapshot.opcache_scripts = [OpcacheScript(**s) for s in data.get("opcache_scripts", [])]
         snapshot.processes = [ProcessInfo(**p) for p in data.get("processes", [])]
+        snapshot.network_connections = [NetworkConnection(**nc) for nc in data.get("network_connections", [])]
         snapshot.raw_signatures = data.get("raw_signatures", [])
         return snapshot
 
@@ -91,7 +103,9 @@ def parse_memory_dump(dump_path: Path | str) -> MemorySnapshot:
                 b"eval()'d code": "fileless_eval_stream",
                 b"/bin/sh": "spawned_shell_string",
                 b"rwxp": "rwx_memory_mapping",
-                b"_zend_mm_heap": "zend_heap_structure"
+                b"_zend_mm_heap": "zend_heap_structure",
+                b"/wp-content/upgrade/": "wp_upgrade_staging_path",
+                b"setup-config.php": "wp_staged_installer"
             }
             for pattern, label in markers.items():
                 pos = mm.find(pattern)
@@ -171,6 +185,36 @@ def inspect_live_host(pids: Optional[list[int]] = None, proc_root: Path | str = 
                                 process_name=proc_name
                             )
                         )
+
+            # parsing /proc/[pid]/net/tcp for active outbound sockets
+            tcp_file = pid_dir / "net" / "tcp"
+            if tcp_file.exists():
+                for line in tcp_file.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        local_hex, rem_hex, state_hex = parts[1], parts[2], parts[3]
+                        if ":" in rem_hex and ":" in local_hex:
+                            rem_ip_h, rem_port_h = rem_hex.split(":", 1)
+                            _, loc_port_h = local_hex.split(":", 1)
+                            rem_port = int(rem_port_h, 16)
+                            loc_port = int(loc_port_h, 16)
+                            if rem_port > 0 and len(rem_ip_h) == 8:
+                                ip_int = int(rem_ip_h, 16)
+                                octets = [str((ip_int >> (8 * i)) & 0xFF) for i in range(4)]
+                                rem_ip = ".".join(octets)
+                                state = "ESTABLISHED" if state_hex == "01" else state_hex
+                                snapshot.network_connections.append(
+                                    NetworkConnection(
+                                        remote_ip=rem_ip,
+                                        remote_port=rem_port,
+                                        local_port=loc_port,
+                                        protocol="tcp",
+                                        pid=pid,
+                                        process_name=proc_name,
+                                        state=state
+                                    )
+                                )
+
         except (PermissionError, OSError, ValueError):
             continue
 

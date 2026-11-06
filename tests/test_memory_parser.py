@@ -59,7 +59,17 @@ class TestMemoryParser(unittest.TestCase):
                     "ppid": 1234,
                     "name": "sh",
                     "parent_name": "php-fpm",
-                    "cmdline": "/bin/sh -c id"
+                    "cmdline": "/bin/sh -c id",
+                    "user": "www-data"
+                }
+            ],
+            "network_connections": [
+                {
+                    "remote_ip": "198.51.100.77",
+                    "remote_port": 3306,
+                    "local_port": 49152,
+                    "pid": 1234,
+                    "process_name": "php-fpm"
                 }
             ]
         }
@@ -80,12 +90,16 @@ class TestMemoryParser(unittest.TestCase):
             self.assertFalse(snapshot.opcache_scripts[0].exists_on_disk)
             self.assertEqual(len(snapshot.processes), 1)
             self.assertEqual(snapshot.processes[0].name, "sh")
+            self.assertEqual(snapshot.processes[0].user, "www-data")
+            self.assertEqual(len(snapshot.network_connections), 1)
+            self.assertEqual(snapshot.network_connections[0].remote_ip, "198.51.100.77")
+            self.assertEqual(snapshot.network_connections[0].remote_port, 3306)
 
     # testing parse operation of raw binary file
     def test_parse_binary_memory_dump_mmap(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             raw_path = Path(tmp_dir) / "core.raw"
-            raw_bytes = b"\x00" * 64 + b"eval()'d code\x00" + b"/bin/sh\x00" + b"rwxp\x00"
+            raw_bytes = b"\x00" * 64 + b"eval()'d code\x00" + b"/bin/sh\x00" + b"rwxp\x00" + b"/wp-content/upgrade/wordpress-6.7-tmp/setup-config.php\x00"
             raw_path.write_bytes(raw_bytes)
 
             snapshot = parse_memory_dump(raw_path)
@@ -96,6 +110,8 @@ class TestMemoryParser(unittest.TestCase):
             self.assertEqual(len(snapshot.opcache_scripts), 1)
             self.assertEqual(snapshot.opcache_scripts[0].script_path, "eval()'d code")
             self.assertFalse(snapshot.opcache_scripts[0].exists_on_disk)
+            self.assertTrue(any(sig.startswith("wp_upgrade_staging_path@") for sig in snapshot.raw_signatures))
+            self.assertTrue(any(sig.startswith("wp_staged_installer@") for sig in snapshot.raw_signatures))
 
     # testing live host inspection
     def test_inspect_live_host_mock_proc(self):
@@ -120,6 +136,15 @@ class TestMemoryParser(unittest.TestCase):
             (pid_1001 / "cmdline").write_bytes(b"/bin/sh\x00-c\x00whoami\x00")
             (pid_1001 / "status").write_text("Name:\tsh\nPPid:\t1000\n", encoding="utf-8")
 
+            # network connections
+            net_dir = pid_1000 / "net"
+            net_dir.mkdir() # 0571A8C0:C000 -> 192.168.113.5:49152, 4D6433C6:0CEA -> 198.51.100.77:3306
+            (net_dir / "tcp").write_text(
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+             "   0: 0571A8C0:C000 4D6433C6:0CEA 01 00000000:00000000 00:00000000 00000000    33        0 12345\n",
+             encoding="utf-8"
+            )
+
             snapshot = inspect_live_host(proc_root=proc_root)
             self.assertEqual(len(snapshot.processes), 2)
             self.assertEqual(len(snapshot.regions), 1)
@@ -130,6 +155,11 @@ class TestMemoryParser(unittest.TestCase):
             self.assertEqual(child_proc.name, "sh")
             self.assertEqual(child_proc.parent_name, "php-fpm")
             self.assertEqual(child_proc.cmdline, "/bin/sh -c whoami")
+
+            self.assertEqual(len(snapshot.network_connections), 1)
+            self.assertEqual(snapshot.network_connections[0].remote_ip, "198.51.100.77")
+            self.assertEqual(snapshot.network_connections[0].remote_port, 3306)
+
 
     # test acquisition automation and error handling
     def test_acquire_and_scan(self):

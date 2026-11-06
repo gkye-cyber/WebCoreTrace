@@ -7,7 +7,8 @@ from web_core_trace.parser import LogEntry
 from web_core_trace.detector import (
     check_signatures, 
     detect_brute_force, 
-    detect_php2shell_stale_worker, 
+    detect_php2shell_stale_worker,
+    detect_wp_upgrade_race,
     ThreatDetector
 )
 from web_core_trace.memory_parser import (
@@ -101,6 +102,22 @@ class TestDetector(unittest.TestCase):
         ]
         matches = detect_php2shell_stale_worker(entries)
         self.assertTrue(any(m.category == "PHP2Shell (CVE-2026-109619)" for m in matches))
+
+    def test_wp_upgrade_staging_signature(self):
+        entry = make_entry(uri="/wp-content/upgrade/wordpress-6.8-abc123/setup-config.php")
+        matches = check_signatures(entry)
+        self.assertTrue(any(m.category == "WordPress Upgrade Race (CVE-2026-119977)" for m in matches))
+
+    def test_wp_upgrade_race_polling_and_post(self):
+        entries = [
+            make_entry(ip="10.0.0.9", method="GET", uri="/wp-content/upgrade/wp-tmp-1/install.php", status_code=404),
+            make_entry(ip="10.0.0.9", method="GET", uri="/wp-content/upgrade/wp-tmp-2/setup-config.php", status_code=200),
+            make_entry(ip="10.0.0.9", method="POST", uri="/wp-content/upgrade/wp-tmp-2/setup-config.php?step=2", status_code=200)
+        ]
+        matches = detect_wp_upgrade_race(entries, threshold=3)
+        categories = {m.category for m in matches}
+        self.assertIn("WordPress Upgrade Race (CVE-2026-119977)", categories)
+        self.assertIn("WordPress Upgrade Probing (CVE-2026-119977)", categories)
 
     # end-to-end test
     def test_threat_detector_end_to_end(self):
