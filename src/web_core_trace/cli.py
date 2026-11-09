@@ -40,6 +40,7 @@ def parse_args(args: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--live-host", action="store_true", help="Inspect live host processes via /proc")
     parser.add_argument("--acquire-and-scan", choices=["avml", "gcore"], help="Acquire memory with avml/gcore and scan immediately")
     parser.add_argument("--pid", type=int, help="Target process ID for --live-host or --acquire-and-scan")
+    parser.add_argument("--wp-root", type=str, help="Path to WordPress root directory to inspect filesystem artifacts")
     
     return parser.parse_args(args)
 
@@ -115,28 +116,35 @@ def main_pipeline(argv: Optional[list[str]] = None) -> int:
             return 1
 
         threats = detector.analyze_memory(snapshot)
+        if args.wp_root:
+            threats.extend(detector.analyze_wp_filesystem(args.wp_root))
         report = build_forensic_report(entries=[], threats=threats, ip_enrichments={})
     else:
-        if not args.log_file:
-            print("[-] Error: log_file is required in web-log-triage mode.", file=sys.stderr)
-            return 1
-        log_path = Path(args.log_file)
-        if not log_path.is_file():
-            print(f"[-] Error: File not found: {args.log_file}", file=sys.stderr)
+        if not args.log_file and not args.wp_root:
+            print("[-] Error: log_file (or --wp-root) is required in web-log-triage mode.", file=sys.stderr)
             return 1
 
-        # run pipeline
-        entries = list(parse_file(log_path))
-        if not entries:
-            print("[-] Warning: No valid log entries found to parse.", file=sys.stderr)
-            return 0
+        entries = []
+        if args.log_file:
+            log_path = Path(args.log_file)
+            if not log_path.is_file():
+                print(f"[-] Error File not found: {args.log_file}", file=sys.stderr)
+                return 1
+
+            # run pipeline
+            entries = list(parse_file(log_path))
+            if not entries and not args.wp_root:
+                print("[-] Warning: No valid log entries found to parse.", file=sys.stderr)
+                return 0
 
         # threat detection
-        threats = detector.analyze(entries)
+        threats = detector.analyze(entries) if entries else []
+        if args.wp_root:
+            threats.extend(detector.analyze_wp_filesystem(args.wp_root))
 
         # IP Enrichment
         enricher = IPEnricher(enable_geoip=not args.no_geoip)
-        enrichments = enrich_ips(entries, enricher)
+        enrichments = enrich_ips(entries, enricher) if entries else {}
 
         # Metrics & Reporting
         report = build_forensic_report(entries, threats, enrichments)
