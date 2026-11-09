@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 from collections import defaultdict
+from pathlib import Path
 from typing import Iterable, Optional
 from web_core_trace.memory_parser import MemorySnapshot
 from web_core_trace.parser import LogEntry
+import ipaddress
 import re
 
 @dataclass
@@ -405,7 +407,8 @@ def detect_fileless_webshells(snapshot: MemorySnapshot) -> list[ThreatMatch]:
     return matches
 
 ### detecting suspicious process
-WEB_WORKER_NAMES = {"php-fpm", "httpd", "nginx", "apache2", "w3wp.exe", "php-cgi"}
+WEB_WORKER_NAMES = {"php-fpm", "httpd", "nginx", "apache2", "w3wp.exe", "php-cgi", "apache", "www-data"}
+WEB_USER_CONTEXTS = {"www-data", "apache", "nobody", "nginx", "httpd"}
 SHELL_NAMES = {"sh", "bash", "dash", "zsh", "ksh", "cmd.exe", "powershell.exe", "pwsh"}
 
 def detect_suspicious_processes(snapshot: MemorySnapshot) -> list[ThreatMatch]:
@@ -413,18 +416,136 @@ def detect_suspicious_processes(snapshot: MemorySnapshot) -> list[ThreatMatch]:
     for proc in snapshot.processes:
         proc_base = proc.name.lower().rsplit("/", 1)[-1]
         parent_base = proc.parent_name.lower().rsplit("/", 1)[-1]
-        if parent_base in WEB_WORKER_NAMES and proc_base in SHELL_NAMES:
+        proc_user = proc.user.lower().strip()
+        if proc_base in SHELL_NAMES and (parent_base in WEB_WORKER_NAMES or proc_user in WEB_USER_CONTEXTS):
+            context_desc = f"Web worker '{proc.parent_name}' (PPID {proc.ppid})"
+            if proc_user in WEB_USER_CONTEXTS and parent_base not in WEB_WORKER_NAMES:
+                context_desc = f"Web server user context '{proc.user}' (parent '{proc.parent_name}', PPID {proc.ppid})"
             matches.append(
                 ThreatMatch(
                     category="Suspicious Worker Child Process",
                     severity="Critical",
-                    description=f"Web worker '{proc.parent_name}' (PPID {proc.ppid}) spawned shell interpreter '{proc.name}' (PID {proc.pid}).",
-                    matched_payload=f"{proc.parent_name}({proc.ppid}) -> {proc.name}({proc.pid}): {proc.cmdline}",
+                    description=f"{context_desc} spawned shell interpreter '{proc.name}' (PID {proc.pid}).",
+                    matched_payload=f"{proc.parent_name}({proc.ppid}) [user={proc.user or 'n/a'}] -> {proc.name}({proc.pid}): {proc.cmdline}",
                     mitre_id="T1059",
                     mitre_technique="Command and Scripting Interpreter",
                     mitre_tactic="Execution"
                 )
             )
+    return matches
+
+### detecting unexpected outbound database connections (WordPress CVW-2026-119977)
+DB_PORTS = {3306, 3307}
+_INTERNAL_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10")
+)
+
+def _is_external_db_host(host:str) -> bool:
+    clean_host = host.strip().split(":", 1)[0].strip("[]").lower()
+    if not clean_host or clean_host in {"localhost", "db", "mysql","mariadb", "database"} or clean_host.endswith((".local", ".internal", ".lan")):
+        return False
+    try:
+        ip_obj = ipaddress.ip_address(clean_host)
+        return not any(ip_obj in net for net in _INTERNAL_NETWORKS)
+    except ValueError:
+        return True
+
+def detect_external_db_connections(snapshot: MemorySnapshot) -> list[ThreatMatch]:
+    matches: list[ThreatMatch] = []
+    for conn in snapshot.network_connections:
+        proc_base = conn.process_name.lower().rsplit("/", 1)[-1]
+        if conn.remote_port in DB_PORTS and _is_external_db_host(conn.remote_ip):
+            if not proc_base or proc_base in WEB_WORKER_NAMES:
+                matches.append(
+                    ThreatMatch(
+                        category="External Database Socket (CVE-2026-119977)",
+                        severity="Critical",
+                        description=f"Web worker '{conn.process_name}' (PID {conn.pid}) holds active outbound database connection to external IP {conn.remote_ip}:{conn.remote_port}.",
+                        matched_payload=f"{conn.process_name}(PID {conn.pid}) -> {conn.remote_ip}:{conn.remote_port} [{conn.state}]",
+                        mitre_id="T1071.001",
+                        mitre_technique="Application Layer Protocol",
+                        mitre_tactic="Command and Control"
+                    )
+                )
+    return matches
+
+### filesystem artifact inspection for WordPress CVE-2026-119977
+_DB_HOST_PATTERN = re.compile(r"define\s*\(\s*['\"]DB_HOST['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+
+def detect_wp_filesystem_artifacts(wp_root: Path | str) -> list[ThreatMatch]:
+    root = Path(wp_root)
+    matches: list[ThreatMatch] = []
+    if not root.exists() or not root.is_dir():
+        return matches
+
+    wp_config = root / "wp-config.php"
+    version_file = root / "wp-includes" / "version.php"
+
+    # 1. inspect wp-config.php for unauthorized external DB_HOST & mtime mismatch
+    if wp_config.is_file():
+        try:
+            content = wp_config.read_text(encoding="utf-8", errors="replace")
+            db_host_match = _DB_HOST_PATTERN.search(content)
+            if db_host_match:
+                db_host = db_host_match.group(1).strip()
+                if _is_external_db_host(db_host):
+                    matches.append(
+                        ThreatMatch(
+                            category="Manipulated wp-config.php (CVE-2026-119977)",
+                            severity="Critical",
+                            description=f"wp-config.php defines external/unauthorized DB_HOST '{db_host}'.",
+                            matched_payload=f"{wp_config}: DB_HOST='{db_host}'",
+                            mitre_id="T1505",
+                            mitre_technique="Server Software Component",
+                            mitre_tactic="Persistence"
+                        )
+                    )
+
+            if version_file.is_file():
+                config_mtime = wp_config.stat().st_mtime
+                version_mtime = version_file.stat().st_mtime
+                # flag if wp-config.php was modified within 300 seconds of core update
+                if abs(config_mtime - version_mtime) <= 300:
+                    matches.append(
+                        ThreatMatch(
+                            category="Manipulated wp-config.php (CVE-2026-119977)",
+                            severity="High",
+                            description="wp-config.php modification timestamp closely matches WordPress core update timestamp.",
+                            matched_payload=f"wp-config.php mtime={int(config_mtime)} vs version.php mtime={int(version_mtime)}",
+                            mitre_id="T1565.001",
+                            mitre_technique="Data Manipulation: Stored Data Manipulation",
+                            mitre_tactic="Impact"
+                        )
+                    )
+        except OSError:
+            pass
+
+    # 2. Inspect /wp-content/upgrade/ for residual directories, customized scripts, or shells
+    upgrade_dir = root / "wp-content" / "upgrade"
+    if upgrade_dir. is_dir():
+        for item in sorted(upgrade_dir.iterdir()):
+            if item.name.startswith("."):
+                continue
+            if item.is_dir() or item.suffix.lower() in {".php", ".sh", ".pl", ".py", ".phtml"}:
+                matches.append(
+                    ThreatMatch(
+                        category="Residual Upgrade Artifact (CVE-2026-119977)",
+                        severity="High",
+                        description=f"Abandoned staging directory or script '{item.name}' found inside /wp-content/upgrade/.",
+                        matched_payload=str(item),
+                        mitre_id="T1505.003",
+                        mitre_technique="Server Software Component: Web Shell",
+                        mitre_tactic="Persistence"
+                    )
+                )
+
     return matches
 
 ### unified function to detect threats in log entries
@@ -461,4 +582,8 @@ class ThreatDetector:
         all_matches.extend(detect_pointer_corruption(snapshot))
         all_matches.extend(detect_fileless_webshells(snapshot))
         all_matches.extend(detect_suspicious_processes(snapshot))
+        all_matches.extend(detect_external_db_connections(snapshot))
         return all_matches
+
+    def analyze_wp_filesystem(self, wp_root: Path | str) -> list[ThreatMatch]:
+        return detect_wp_filesystem_artifacts(wp_root)

