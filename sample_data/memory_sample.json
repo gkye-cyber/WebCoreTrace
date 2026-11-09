@@ -37,13 +37,23 @@
       "pid": 1420
     }
   ],
-  "processes": [
+    "processes": [
     {
       "pid": 1488,
       "ppid": 1420,
       "name": "sh",
       "parent_name": "php-fpm",
-      "cmdline": "/bin/sh -c id; uname -a"
+      "cmdline": "/bin/sh -c id; uname -a",
+      "user": "www-data"
+    }
+  ],
+  "network_connections": [
+    {
+      "remote_ip": "198.51.100.77",
+      "remote_port": 3306,
+      "local_port": 52100,
+      "pid": 1420,
+      "process_name": "php-fpm"
     }
   ]
 }

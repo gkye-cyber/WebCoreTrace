@@ -1,6 +1,6 @@
 """Automated Web Server Access Log Threat Hunter & Forensic Triage Tool."""
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 
 from web_core_trace.parser import LogEntry, parse_log_line, parse_file
 from web_core_trace.detector import ThreatDetector, ThreatMatch, SignatureRule

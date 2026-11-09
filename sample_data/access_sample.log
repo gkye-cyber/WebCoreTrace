@@ -6,3 +6,6 @@
 203.0.113.99 - - [10/Oct/2026:13:59:01 -0400] "GET /admin HTTP/1.1" 404 162 "-" "gobuster/3.1.0"
 203.0.113.99 - - [10/Oct/2026:13:59:02 -0400] "GET /wp-login.php HTTP/1.1" 404 162 "-" "gobuster/3.1.0"
 203.0.113.99 - - [10/Oct/2026:13:59:03 -0400] "GET /.env HTTP/1.1" 404 162 "-" "gobuster/3.1.0"
+198.51.100.77 - - [10/Oct/2026:14:00:01 -0400] "GET /wp-content/upgrade/wordpress-6.8-tmp1/install.php HTTP/1.1" 404 162 "-" "Mozilla/5.0"
+198.51.100.77 - - [10/Oct/2026:14:00:02 -0400] "GET /wp-content/upgrade/wordpress-6.8-tmp2/setup-config.php HTTP/1.1" 200 1420 "-" "Mozilla/5.0"
+198.51.100.77 - - [10/Oct/2026:14:00:03 -0400] "POST /wp-content/upgrade/wordpress-6.8-tmp2/setup-config.php?step=2 HTTP/1.1" 200 512 "-" "Mozilla/5.0"

@@ -57,5 +57,5 @@ class TestParser(unittest.TestCase):
     def test_parse_file(self):
         sample_file_path = Path(__file__).parent.parent / "sample_data" /"access_sample.log"
         entries = list(parse_file(sample_file_path))
-        self.assertEqual(len(entries), 8)  # assuming sample_logs.txt has 8 valid log lines
+        self.assertEqual(len(entries), 11)  # assuming sample_logs.txt has 8 valid log lines
         self.assertIsNotNone(entries[0])

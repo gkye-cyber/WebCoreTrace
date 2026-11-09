@@ -17,11 +17,11 @@ Modern web server breaches rarely leave their full footprint in a single place�
 
 1. **Zero External Dependencies:** Built using Python's standard library (with optional `rich` formatting), ensuring it runs out-of-the-box on air-gapped forensic workstations or minimal production servers.
 2. **Dual-Mode Forensic Architecture (`web-log-triage` & `core`):**
-   - **`web-log-triage` Mode (Application & Network Boundary):** Streams flat text access logs (Apache, Nginx, IIS Common/Combined) line-by-line to detect external exploit triggers, scanners, and **PHP2Shell (`CVE-2026-109618` / `CVE-2026-109619`)** state manipulation.
-   - **`core` Mode (Host & Runtime Boundary):** Inspects static RAM/core dumps (`--memory-dump` via Volatility 3 JSON or zero-copy binary `mmap`), live `/proc` process trees (`--live-host`), or automated acquisitions (`--acquire-and-scan` via `avml`/`gcore`) for post-exploitation memory artifacts.
+   - **`web-log-triage` Mode (Application & Network Boundary):** Streams flat text access logs (Apache, Nginx, IIS Common/Combined) line-by-line to detect external exploit triggers, scanners, **PHP2Shell (`CVE-2026-109618` / `CVE-2026-109619`)** state manipulation, and **WordPress Core Upgrade Race (`CVE-2026-119977`)** staging exploits.
+   - **`core` Mode (Host & Runtime Boundary):** Inspects static RAM/core dumps (`--memory-dump` via Volatility 3 JSON or zero-copy binary `mmap`), live `/proc` process trees & `/proc/[pid]/net/tcp` sockets (`--live-host`), or automated acquisitions (`--acquire-and-scan` via `avml`/`gcore`) for post-exploitation memory and network artifacts, plus optional WordPress filesystem artifact inspection (`--wp-root`).
 3. **Dual-Pass Web & Memory Heuristics:**
-   - **Web Layer:** Evaluates individual requests against regex signatures (SQLi, LFI, RCE, XSS, SSRF, PHP2Shell OOM triggers) and correlates multi-request sequences (directory brute-forcing and `500`/`502`/`503` $\rightarrow$ `200` worker state reuse).
-   - **Memory Layer:** Detects Zend heap Use-After-Free (UAF) dangling pointers, cross-worker orphan heap chunks, `rwx` executable heaps, hooked/corrupted function pointers, fileless opcache `eval()` web shells, and web workers spawning shell interpreters.
+   - **Web Layer:** Evaluates individual requests against regex signatures (SQLi, LFI, RCE, XSS, SSRF, PHP2Shell OOM triggers, WordPress `/wp-content/upgrade/` staged installer access) and correlates multi-request sequences (directory brute-forcing, `500`/`502`/`503` $\rightarrow$ `200` worker state reuse, and high-frequency upgrade staging polling / `POST` hijacks).
+   - **Memory, Network & Filesystem Layer:** Detects Zend heap Use-After-Free (UAF) dangling pointers, cross-worker orphan heap chunks, `rwx` executable heaps, hooked/corrupted function pointers, fileless opcache `eval()` web shells, web workers or web user contexts (`www-data`, `apache`, `nobody`) spawning shell interpreters, unexpected outbound database sockets (`3306`/`3307`) to external IPs, and manipulated `wp-config.php` / residual `/wp-content/upgrade/` artifacts.
 4. **Anti-Evasion & URL Normalization:** Automatically unquotes URL encodings (`%20` $\rightarrow$ space, `%27` $\rightarrow$ `'`, `%2f` $\rightarrow$ `/`) while preserving raw URI inspection for `%XX` OOM floods.
 5. **MITRE ATT&CK® Alignment:** Every web and memory alert is pre-mapped to official ATT&CK Enterprise techniques (`T1190`, `T1059`, `T1055`, `T1068`, `T1574`, `T1505.003`, `T1595`).
 6. **Multi-Format Reporting:** Instant terminal dashboard for quick scoping, structured JSON for SIEM ingestion, and self-contained HTML reports for executive reporting.
@@ -139,6 +139,7 @@ usage: Web Core Trace [-h] [--mode {web-log-triage,core}] [-f {console,html,json
                       [-o OUTPUT] [--threshold THRESHOLD] [--no-geoip]
                       [--memory-dump MEMORY_DUMP] [--live-host]
                       [--acquire-and-scan {avml,gcore}] [--pid PID]
+                      [--wp-root WP_ROOT]
                       [log_file]
 
 WebCoreTrace: Dual-Mode Web Access Log & Host Memory Forensic Triage Tool
@@ -162,6 +163,7 @@ options:
   --acquire-and-scan {avml,gcore}
                         Acquire memory with avml/gcore and scan immediately
   --pid PID             Target process ID for --live-host or --acquire-and-scan
+  --wp-root WP_ROOT     Path to WordPress root directory to inspect filesystem artifacts
 ```
 
 ---
@@ -185,7 +187,12 @@ options:
 | Executable Heap (`RWX`) | `core` (`regions`) | T1055 | Defense Evasion | Anomalous `rwx` memory regions in web server worker spaces |
 | Function Pointer Hook / Corruption | `core` (`function_pointers`) | T1574 | Persistence | Core Zend/module function pointers pointing outside valid module bounds |
 | Fileless Web Shell | `core` (`opcache_scripts`) | T1505.003 | Persistence | Memory-resident PHP execution streams (`eval()'d code`) with no file on disk |
-| Suspicious Worker Child Process | `core` (`processes`) | T1059 | Execution | Web workers (`php-fpm`, `httpd`, `nginx`) spawning shell interpreters (`sh`, `bash`, `cmd.exe`) |
+| Suspicious Worker Child Process | `core` (`processes`) | T1059 | Execution | Web workers (`php-fpm`, `httpd`, `nginx`) or web user contexts (`www-data`, `apache`, `nobody`) spawning shell interpreters (`sh`, `bash`, `cmd.exe`) |
+| WordPress Upgrade Race (`CVE-2026-119977`) | `web-log-triage` (`decoded_uri` / `multi-entry`) | T1190 | Initial Access | Direct requests or `POST` submissions to `setup-config.php`, `install.php`, or residual `.php` scripts under `/wp-content/upgrade/` |
+| WordPress Upgrade Probing (`CVE-2026-119977`) | `web-log-triage` (`multi-entry`) | T1595.003 | Reconnaissance | High-frequency polling targeting `/wp-content/upgrade/` staging directories |
+| External Database Socket (`CVE-2026-119977`) | `core` (`network_connections`) | T1071.001 | Command and Control | Active outbound database connections (`3306`/`3307`) from web workers to external public IPs |
+| Manipulated `wp-config.php` (`CVE-2026-119977`) | `--wp-root` (`filesystem`) | T1505 / T1565.001 | Persistence / Impact | Unauthorized external `DB_HOST` definitions or `wp-config.php` `mtime` matching core update windows |
+| Residual Upgrade Artifact (`CVE-2026-119977`) | `--wp-root` (`filesystem`) | T1505.003 | Persistence | Abandoned staging directories, customized scripts, or shells inside `/wp-content/upgrade/` |
 
 ---
 
@@ -223,6 +230,11 @@ options:
 ---
 
 ## Release Notes & Version History
+
+### `v1.1.0` — WordPress Core Upgrade Race (`CVE-2026-119977`) IoC Detection
+- **Web Access Log Signatures & Behavioral Correlation:** Added `wp_upgrade_staging_rule` and `detect_wp_upgrade_race()` to flag direct access to `setup-config.php` / `install.php` under `/wp-content/upgrade/`, staged installer `POST` submissions (`?step=2`), and high-frequency upgrade directory polling.
+- **Memory & Network Socket Forensics:** Extended `MemorySnapshot` with `NetworkConnection` and `ProcessInfo.user` support, live `/proc/[pid]/net/tcp` socket inspection, binary `mmap` markers for `/wp-content/upgrade/` and `setup-config.php`, external database socket detection (`3306`/`3307`), and web user context (`www-data`, `apache`, `nobody`) shell detection.
+- **WordPress Filesystem Triage (`--wp-root`):** Added `detect_wp_filesystem_artifacts()` and CLI `--wp-root` option to inspect `wp-config.php` for unauthorized external `DB_HOST` entries, `mtime` anomalies against `wp-includes/version.php`, and residual directories or scripts inside `/wp-content/upgrade/`.
 
 ### `v1.0.0` — Dual-Mode Architecture & Host Memory Forensics (`WebCoreTrace`)
 - **Project Rebrand & Package Refactor:** Evolved `web-log-triage` into `WebCoreTrace` (`web_core_trace`).
